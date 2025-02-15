@@ -1,0 +1,80 @@
+Sujeto
+E: elefante, estrella, equipo
+A: avión, amor, amigo
+O: oso, orquesta, ojo
+S: sol, serpiente, sombra
+R: ratón, rueda, río
+N: nube, noche, nota
+I: iglesia, isla, idea
+D: delfín, dado, dinosaurio
+L: león, lago, luna
+C: casa, corazón, coche
+T: tigre, tierra, teatro
+U: uva, unicornio, utensilio
+M: mesa, mariposa, montaña
+P: perro, planta, puerta
+B: barco, bosque, biblioteca
+Verbos
+E: escribir, explorar, entender
+A: amar, andar, admirar
+O: observar, oír, ordenar
+S: saltar, soñar, sonreír
+R: reír, recibir, reparar
+N: nadar, notar, necesitar
+I: imaginar, insistir, inventar
+D: decir, dibujar, desear
+L: leer, levantar, lanzar
+C: correr, cantar, comer
+T: tocar, tirar, tomar
+U: usar, unir, ubicar
+M: mover, montar, mezclar
+P: pintar, pensar, parar
+B: bailar, brincar, buscar
+Predicados
+E: es gigante, está feliz, es rápido
+A: ama volar, admira la belleza, anda despacio
+O: observa el paisaje, oía la música, organiza su espacio
+S: salta muy alto, sonríe con alegría, sueña con aventuras
+R: repara el motor, recibe una carta, recorre el mundo
+N: necesita ayuda, nada en el mar, nota los cambios
+I: inventa historias, insiste en su idea, imagina el futuro
+D: dibuja un retrato, desearía estar allí, dice la verdad
+L: lanza la pelota, levanta la mano, lee el libro
+C: canta una canción, come una manzana, corre por el parque
+T: toma la foto, toca la guitarra, tira el balón
+U: usa el ordenador, une las piezas, ubica el objeto
+M: mezcla los colores, monta en bicicleta, mueve los muebles
+P: pinta la pared, para el tráfico, piensa en la solución
+B: busca el tesoro, brinca en el trampolín, baila en la fiesta
+Artículos
+E: el, ella, ellos
+A: algún, al, a
+O: otro, otros, otra
+S: su, sus, si
+R: el, un, una
+N: ninguno, ningún, nos
+I: el, la, los
+D: del, de, desde
+L: las, los, lo
+C: con, cada, contra
+T: tu, tus, todo
+U: un, una, unos
+M: mi, mis, más
+P: por, para, pero
+B: bajo, bien, buenos
+Nombres Propios
+E: Elena, Eduardo, Ernesto
+A: Ana, Alberto, Andrés
+O: Oscar, Olivia, Omar
+S: Sofía, Samuel, Santiago
+R: Raúl, Rodrigo, Rosa
+N: Natalia, Nicolás, Noelia
+I: Isabel, Ignacio, Iván
+D: Daniela, Diego, David
+L: Laura, Leonardo, Luis
+C: Carmen, Carlos, Claudia
+T: Teresa, Tomás, Tatiana
+U: Úrsula, Ulises, Uriel
+M: Marta, Marcos, Manuel
+P: Paula, Pablo, Patricia
+B: Beatriz, Bruno, Berta
