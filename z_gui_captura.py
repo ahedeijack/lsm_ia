@@ -1,14 +1,32 @@
+"""
+Hand Gesture Capture System (Console Edition)
+=============================================
+Real-time hand detection → crop → save for training.
+
+Controls:
+- 'c' = Capture image  
+- 'n' = New folder name
+- 'd' = Delete ALL data (type DELETE to confirm)
+- 'q' = Quit
+
+Author: Enhanced console version
+Date: December 2025
+"""
+
 import cv2
 from cvzone.HandTrackingModule import HandDetector
 import numpy as np
 import math
 import os
-import shutil  # Para eliminar archivos
-import tkinter as tk
-from tkinter import messagebox
-import subprocess
+import shutil
+from pathlib import Path
+import logging
 
-# Variables globales
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Global configuration
 cap = cv2.VideoCapture(0)
 detector = HandDetector(maxHands=1)
 offset = 20
@@ -16,168 +34,160 @@ imgSize = 300
 folder = ""
 counter = 0
 imgWhite = None
+current_folder_label = "No folder selected"
 
-#Para funcionar, creamos un directorio con el nombre de nuestra ventana en tkinter
-def func_create_folder():
-    global folder, counter
-    folder_name = entry.get()
+def func_clear_screen():
+    """Clear console screen."""
+    os.system('clear' if os.name == 'posix' else 'cls')
+
+def func_create_folder(folder_name: str):
+    """Create gesture folder in Datos/train/."""
+    global folder, counter, current_folder_label
     
-    #Validamos que el nombre sea valido, y posteriormente creamos el directorio
-    #Y el contador de imagenes, lo reiniciamos a 0
-    if folder_name:
-        folder = f"Datos/train/{folder_name}"
-        if not os.path.exists(folder):
-            os.makedirs(folder)
-        print(f"Directorio creado: {folder}")
-        counter = 0
-        label.config(text=f"Directorio actual: {folder_name}")
+    if folder_name.strip():
+        folder = f"Datos/train/{folder_name.strip()}"
+        os.makedirs(folder, exist_ok=True)
+        
+        # Count existing images
+        counter = len([f for f in os.listdir(folder) if f.endswith('.jpg')])
+        current_folder_label = f"{folder_name.strip()} ({counter} images)"
+        
+        logger.info(f"✅ Directorio creado: {folder}")
+        print(f"📁 Folder ready: {folder}")
     else:
-        label.config(text="Por favor ingresa un nombre válido.")
+        print("❌ Por favor ingresa un nombre válido.")
 
-#Inicializamos la captura de imagenes y validamos que halla imagenes en la carpeta y el diccionario existe
-#Enseguida agregamos la imagen capturada y aumentamos 1 al contador
 def func_take_capture():
+    """Save cropped hand image."""
     global counter, imgWhite
+    
     if imgWhite is not None and folder:
-        cv2.imwrite(f'{folder}/Image_{counter}.jpg', imgWhite)  # Guarda imagen de la mano
-        print(f'Imagen guardada: {folder}/Image_{counter}.jpg')
+        filename = f'{folder}/Image_{counter:04d}.jpg'
+        cv2.imwrite(filename, imgWhite)
+        print(f'📸 Imagen guardada: {filename}')
         counter += 1
+        current_folder_label = f"{Path(folder).name} ({counter} images)"
     else:
-        print("No se puede guardar la imagen. Asegúrese de que haya una mano detectada y que se haya creado un directorio.")
+        print("❌ No se puede guardar. Necesitas: 1) Mano detectada 2) Carpeta creada")
 
-#En caso de que se seleccione eliminar, vamos a eliminar todo dentro de la carpeta Datos,
-#la cual incluye las etiquetas y las carpetas con las imagenes capturadas
 def func_delete_all():
-    train_folder = "Datos/train"
-    validation_folder = "Datos/validation"
-
-    if os.path.exists("Datos"):
-        respuesta = messagebox.askyesno("Confirmación", "¿Está seguro de que desea eliminar todos los archivos en 'train' y 'validation'?")
-        if respuesta:
-            # Eliminar contenido de train
-            if os.path.exists(train_folder):
-                shutil.rmtree(train_folder)
-                os.makedirs(train_folder)  # Recrea la carpeta vacía
-                print("Todos los archivos en la carpeta 'train' han sido eliminados.")
-            else:
-                print("La carpeta 'train' no existe.")
-
-            # Eliminar contenido de validation
-            if os.path.exists(validation_folder):
-                shutil.rmtree(validation_folder)
-                os.makedirs(validation_folder)  # Recrea la carpeta vacía
-                print("Todos los archivos en la carpeta 'validation' han sido eliminados.")
-            else:
-                print("La carpeta 'validation' no existe.")
-        else:
-            print("Eliminación cancelada.")
+    """Delete all training data (SAFE confirmation)."""
+    print("\n⚠️  ELIMINAR TODO?")
+    print("Esto borra Datos/train/ y Datos/validation/")
+    confirm = input("Escribe 'DELETE' para confirmar: ").strip().upper()
+    
+    if confirm == "DELETE":
+        train_folder = "Datos/train"
+        validation_folder = "Datos/validation"
+        
+        if os.path.exists(train_folder):
+            shutil.rmtree(train_folder)
+            os.makedirs(train_folder)
+            print("✅ train/ eliminado")
+        
+        if os.path.exists(validation_folder):
+            shutil.rmtree(validation_folder)
+            os.makedirs(validation_folder)
+            print("✅ validation/ eliminado")
+        
+        global folder, counter, current_folder_label
+        folder = ""
+        counter = 0
+        current_folder_label = "ALL DATA DELETED"
     else:
-        print("La carpeta 'Datos' no existe.")
+        print("❌ Cancelado")
 
-#Volvemos a la configuración
-def func_regresar():
-    cap.release()
-    cv2.destroyAllWindows()
-    root.destroy()
-    subprocess.run(['python', 'z_gui_conf.py'])
+def func_show_status():
+    """Show live status."""
+    func_clear_screen()
+    print("=" * 60)
+    print("🤲 CAPTURA DE GESTOS MANUAL")
+    print("=" * 60)
+    print(f"📁 {current_folder_label}")
+    print(f"🖐️  Mano detectada: {'✅' if imgWhite is not None else '❌'}")
+    print("\nCONTROLES:")
+    print("  'c' = 📸 Tomar captura")
+    print("  'n' = 📁 Nuevo directorio")
+    print("  'd' = 🗑️  Eliminar TODO")
+    print("  'q' = 🚪 Salir")
+    print("=" * 60)
 
-#Generamos nuestra interfaz de captura
-def func_setup_gui():
-    global root, entry, label
-    root = tk.Tk()
-    root.title("Gestor de Directorios")
-
-    frame = tk.Frame(root)
-    frame.pack(pady=20)
-
-    entry_label = tk.Label(frame, text="Nombre del nuevo directorio:")
-    entry_label.grid(row=0, column=0, padx=10)
-
-    entry = tk.Entry(frame, width=30)
-    entry.grid(row=0, column=1, padx=10)
-
-    create_button = tk.Button(frame, text="Crear Directorio", command=func_create_folder)
-    create_button.grid(row=1, column=0, columnspan=2, pady=10)
-
-    label = tk.Label(root, text="No se ha creado ningún directorio.")
-    label.pack(pady=10)
-
-    #Botón para tomar captura
-    capture_button = tk.Button(root, text="Tomar Captura", command=func_take_capture)
-    capture_button.pack(pady=5)
-
-    #Botón para eliminar todos los archivos
-    delete_button = tk.Button(root, text="Eliminar Todo", command=func_delete_all)
-    delete_button.pack(pady=5)
-
-    #Regresar
-    regresar_button = tk.Button(root, text="Regresar", command=func_regresar)
-    regresar_button.pack(pady=5)
-
-    root.update()
-
-#Para capturar la imagen funcional, tenemos que procesarla de la siguiente manera 
 def func_hand_capture():
+    """Main capture loop."""
     global imgWhite
+    
+    print("🎥 Cámara iniciada. Coloca tu mano frente a la cámara.")
+    
     while True:
-        #Generamos la captura en un cuadro
         success, img = cap.read()
-        #Detecamos las imagenes, abajo declaramos en hand que solo sera 1 
+        if not success:
+            logger.error("No camera")
+            break
+            
         hands, img = detector.findHands(img)
-
-        cv2.putText(img, "Imagenes guardadas en "+folder+": "+str(counter), 
-                    (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
+        
+        # Status text
+        status = f"Folder: {current_folder_label} | Capturas: {counter}"
+        cv2.putText(img, status, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
         if hands:
             try:
                 hand = hands[0]
-                x, y, w, h = hand['bbox'] #Obtenemos las coordenadas de las imagenes seg+un la captura 
-
-                #Creamos una imagen en blanco la cual nos ayudara a reescalar nuestras imagenes
+                x, y, w, h = hand['bbox']
+                
+                # White background
                 imgWhite = np.ones((imgSize, imgSize, 3), np.uint8) * 255
                 
-                #Posteirormente recortaremos la imagen que esta dentro del recuadro
-                #Esto para que todas cumplan con el tamaño de imagen necesario (300*300) y halla uniformidad de información
-                imgCrop = img[y - offset: y + h + offset, x - offset: x + w + offset]
-
-                #Calcula la relación de aspecto de las imagenes
+                # Crop hand
+                imgCrop = img[y - offset:y + h + offset, x - offset:x + w + offset]
+                
+                # Resize maintaining aspect ratio
                 aspectRatio = h / w
-
-                #Si la imagen es mas alta que ancha, se genera un margen para rellenar de manera vertical
                 if aspectRatio > 1:
                     k = imgSize / h
                     wCal = math.ceil(k * w)
                     imgResize = cv2.resize(imgCrop, (wCal, imgSize))
                     wGap = math.ceil((imgSize - wCal) / 2)
-                    imgWhite[:, wGap: wCal + wGap] = imgResize
+                    imgWhite[:, wGap:wCal + wGap] = imgResize
                 else:
-                #En caso de que no, se genera el margen de manera horizontal
                     k = imgSize / w
                     hCal = math.ceil(k * h)
                     imgResize = cv2.resize(imgCrop, (imgSize, hCal))
                     hGap = math.ceil((imgSize - hCal) / 2)
-                    imgWhite[hGap: hCal + hGap, :] = imgResize
-
+                    imgWhite[hGap:hCal + hGap, :] = imgResize
+                
+                # Show cropped hand
+                cv2.imshow("Mano Recortada (Listo para guardar)", imgWhite)
+                
             except Exception as e:
-                print(f"Error: {e}")
-                continue  #Si hay un error, solo salta de frame 
-
-        cv2.imshow("Image", img)
-
-        key = cv2.waitKey(1)
-
+                logger.error(f"Error processing hand: {e}")
+        
+        cv2.imshow("Cámara - 'c' para capturar", img)
+        func_show_status()
+        
+        key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
+        elif key == ord('c'):
+            func_take_capture()
+        elif key == ord('n'):
+            folder_name = input("Nombre del gesto (ej: palm_up): ").strip()
+            func_create_folder(folder_name)
+        elif key == ord('d'):
+            func_delete_all()
 
-        # Actualización de la ventana de tkinter
-        root.update()
-
-# Ejecución principal
-if __name__ == "__main__":    
-    func_setup_gui()
-    func_hand_capture()
-
-    cap.release()
-    cv2.destroyAllWindows()
-    root.destroy()
-
+# Main execution
+if __name__ == "__main__":
+    try:
+        # Create base directories
+        os.makedirs("Datos/train", exist_ok=True)
+        os.makedirs("Datos/validation", exist_ok=True)
+        
+        func_hand_capture()
+        
+    except KeyboardInterrupt:
+        print("\n👋 Interrumpido por usuario")
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        print("✅ Sesión terminada")
