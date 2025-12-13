@@ -1,5 +1,10 @@
+"""
+🤲 Enhanced Sign Language GUI Recognition System (FINAL, TUNED)
+===============================================================
+"""
+
 import tkinter as tk
-from tkinter import messagebox, simpledialog, Listbox
+from tkinter import messagebox, simpledialog
 import os
 import subprocess
 from cvzone.HandTrackingModule import HandDetector
@@ -10,364 +15,458 @@ import numpy as np
 import math
 import time
 import difflib
+import logging
+from pathlib import Path
+from typing import List, Dict
 
+# --------------------------------------------------
+# Logging
+# --------------------------------------------------
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-#Mejora de calidad de captura
-cap = cv2.VideoCapture(1)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)  # Aumenta la resolución
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+# --------------------------------------------------
+# Config
+# --------------------------------------------------
+MODEL_PATH = "Modelo/mejor_modelo_gestos.h5"
+LABELS_PATH = "Modelo/labels.txt"
+DICT_PATH = "Datos/Analisis/z_info_diccionario.txt"
 
-root = tk.Tk()
-root.title("Interfaz")
-root.geometry("1280x720")
-root.configure(bg='#8e8ca3')
+IMG_SIZE = 224
+OFFSET = 20
+MIN_CROP_SIZE = 20
 
-#Crear una etiqueta para mostrar la imagen capturada de la cámara
-imagen_label = tk.Label(root)
-imagen_label.place(x=0, y=0, relwidth=1, relheight=1)  #Estira la imagen para cubrir toda la ventana
+# Timing
+tiempo_espera_post_captura = 0.5
+tiempo_espera_siguiente = 0.4
+tiempo_espera_seleccionar = 0.4
+tiempo_espera_gestos = 1.0   # ← ahora ~1 segundo
 
-# Crear un slider para ajustar el porcentaje de similitud
-similarity_slider = tk.Scale(root, from_=1, to=100, orient='horizontal', label="Similitud (%)", bg='#8e8ca3')
-similarity_slider.place(x=120, y=300)
-similarity_slider.set(60)  # Valor inicial en 60%
+# --------------------------------------------------
+# Global state
+# --------------------------------------------------
+cap = None
+detector = None
+classifier = None
+labels: Dict[int, str] = {}
+diccionario: List[str] = []
 
-#Configuración de los botones
+registro = ""
+sugerencias: List[str] = []
+indice_actual = 0
+max_sugerencias = 5
+
+gesto_actual = ""
+tiempo_inicio_gesto = 0.0
+capturado = False
+last_update_time = 0.0
+gesto_siguiente_inicio = None
+gesto_seleccionar_inicio = None
+
+# FPS
+frame_count = 0
+last_fps_time = time.time()
+current_fps = 0.0
+
+# GUI globals
+root = None
+imagen_label = None
+subtitulo_label = None
+sugerencias_label = None
+similarity_slider = None
+fps_label = None
+
+# --------------------------------------------------
+# Navegación y utilidades GUI
+# --------------------------------------------------
 def func_conf():
     root.destroy()
     subprocess.Popen(["python", "z_gui_conf.py"])
 
-#En caso de que se encuentre un error, se guarda la palabra que tuvo el error
-#además de guardar su palabra corregida. Así mismo, guarda tambien 
-#en el diccionario interno, la palabra corregida.
-def guardar_correccion(palabra, correccion):
-    with open("Datos/Analisis/z_correciones.txt", "a") as f:
-        f.write(f"'{palabra}' : '{correccion}'\n")
-    with open("Datos/Analisis/z_info_diccionario.txt", "a") as ft:
-        ft.write(f"{correccion}\n")
 
-#Abre la función para abrir las capturas.
 def func_captures():
     root.destroy()
     subprocess.Popen(["python", "z_gui_captura.py"])
 
-#Aquí se guarda la frecuencia con la que las letras son detectadas. 
-#Abre el archivo y agrega la letra detectada junto a un salto de línea.
-def guardar_en_frecuencias(texto, archivo="Datos/Analisis/z_frecuencias.txt"):
-    with open(archivo, "a") as f:  
-        f.write(texto + "\n")  
 
-#Para corroborar la precisión, se guarda el resultado correcto o incorrecto de manera binaria
-#en un archivo de texto
-def guardar_en_binario(resultado, archivo="Datos/Analisis/z_binarios.txt"):
-    with open(archivo, "a") as f:
-        f.write(f"{resultado}\n")
-
-#Abre la configuración para ver nuestro alfabeto.
 def func_alph():
     root.destroy()
     subprocess.Popen(["python", "z_gui_alph.py"])
 
-#Función para generar botones de manera rapida y otpima 
-def crear_boton(root, text, command, x, y, bg='white', fg='#562155', width=15, height=2, font=('Comfortaa', 12, 'bold')):
-    boton = tk.Button(root, text=text, bg=bg, fg=fg, width=width, height=height, 
-                      borderwidth=0, relief="flat", font=font, command=command)
+
+def func_reiniciar_deteccion():
+    global registro, gesto_actual, capturado
+    registro = ""
+    gesto_actual = ""
+    capturado = False
+    if subtitulo_label:
+        subtitulo_label.config(text="")
+    if sugerencias_label:
+        sugerencias_label.config(text="")
+    logger.info("Detección reiniciada")
+
+
+def func_crear_boton(root, text, command, x, y,
+                     bg="white", fg="#562155",
+                     width=15, height=2,
+                     font=("Comfortaa", 12, "bold")):
+    boton = tk.Button(root, text=text, bg=bg, fg=fg,
+                      width=width, height=height,
+                      borderwidth=0, relief="flat",
+                      font=font, command=command)
     boton.place(x=x, y=y)
     return boton
 
-#Cuando se detecta un error, también se almacena la palabra que tuvo el error para poder analizarla más adelante.
-def guardar_error(palabra):
-    with open("Datos/Analisis/z_errores.txt", "a") as f:
+# --------------------------------------------------
+# Archivo y logging de métricas
+# --------------------------------------------------
+def func_guardar_en_frecuencias(texto: str,
+                                archivo: str = "Datos/Analisis/z_frecuencias.txt"):
+    Path(os.path.dirname(archivo) or ".").mkdir(parents=True, exist_ok=True)
+    with open(archivo, "a", encoding="utf-8") as f:
+        f.write(texto + "\n")
+
+
+def func_guardar_en_binario(resultado: int,
+                            archivo: str = "Datos/Analisis/z_binarios.txt"):
+    Path(os.path.dirname(archivo) or ".").mkdir(parents=True, exist_ok=True)
+    with open(archivo, "a") as f:
+        f.write(f"{resultado}\n")
+
+
+def func_guardar_error(palabra: str):
+    Path("Datos/Analisis").mkdir(parents=True, exist_ok=True)
+    with open("Datos/Analisis/z_errores.txt", "a", encoding="utf-8") as f:
         f.write(f"{palabra}\n")
 
-#Al finalizar la captura, mostramos una ventana en la que en caso de que la palabra sea la correcta, se llama a la función
-#que guarda el archivo en binario, y en caso contrario, se mandan a llamar a las funciones para guardar en binario, 
-#guardar el error y la palabra, así como la correción de la palabra. 
-def mostrar_ventana_confirmacion(palabra_detectada):
-    respuesta = messagebox.askquestion("Confirmación", f"¿La detección de '{palabra_detectada}' fue correcta?")
-    if respuesta == "yes":
-        guardar_en_binario(1)
-    else:
-        guardar_en_binario(0)
-        guardar_error(palabra_detectada)
-        corregir_palabra(palabra_detectada)
-    global registro
-    registro = ""
 
-#En esta función, cargamos nuestro diccionario interno para empezar a hacer las comparaciones en tiempo real.
-def cargar_diccionario(archivo):
-    with open(archivo, 'r') as f:
-        return [line.strip() for line in f]
+def func_guardar_correccion(palabra: str, correccion: str):
+    Path("Datos/Analisis").mkdir(parents=True, exist_ok=True)
+    with open("Datos/Analisis/z_correciones.txt", "a", encoding="utf-8") as f:
+        f.write(f"'{palabra}' : '{correccion}'\n")
+    with open(DICT_PATH, "a", encoding="utf-8") as f:
+        f.write(correccion + "\n")
 
-# en esta función mandamos a llamar 3 parametros: 
-# 'Palabra' La cual es la palabra detectada, y en caso de tener espacios, los elimina
-# 'Diccionario' El cual es el que tenemos registrado
-# 'Porcentaje de similitud' Que es un valor que comparará la palabra detectada contra la palabra más similar en el diccionario
-def obtener_sugerencias(palabra, diccionario, porcentaje_similitud):
+# --------------------------------------------------
+# Diccionario y sugerencias
+# --------------------------------------------------
+def func_cargar_diccionario(archivo: str) -> List[str]:
+    try:
+        with open(archivo, "r", encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip()]
+    except FileNotFoundError:
+        logger.warning(f"No se encontró el diccionario: {archivo}")
+        return []
+
+
+def func_obtener_sugerencias(palabra: str,
+                             diccionario_local: List[str],
+                             porcentaje_similitud: int) -> List[str]:
     palabra_sin_espacios = palabra.replace(" ", "")
-    similitud = porcentaje_similitud / 100  # Convertir el porcentaje a decimal
+    if not palabra_sin_espacios:
+        return []
+    similitud_min = porcentaje_similitud / 100.0
 
-    #Generamos un arreglo el cual se llenara con las palabras que hay en nuestro diccionario
-    sugerencias = []
-    for palabra_diccionario in diccionario:
-        # Posteriormente va a comparar la palabra detectada 
-        ratio = difflib.SequenceMatcher(None, palabra_sin_espacios, palabra_diccionario).ratio()
-        if ratio >= similitud:
-            sugerencias.append(palabra_diccionario)
-    
-    return sugerencias
+    sugerencias_local: List[str] = []
+    for palabra_dic in diccionario_local:
+        ratio = difflib.SequenceMatcher(
+            None, palabra_sin_espacios, palabra_dic).ratio()
+        if ratio >= similitud_min:
+            sugerencias_local.append(palabra_dic)
 
-#Palabra imnicial 
-indice_actual = 0 
-#Maximo de sugerencias 
-max_sugerencias = 5
-sugerencias = []  
+    return sugerencias_local[:max_sugerencias]
 
 
-# Modificar la función para mostrar solo un máximo de 5 sugerencias y resaltar según el índice
-#Se empiezan a mostrar la sugerencias pero solo de 5 en 5 
-def mostrar_sugerencias(label, sugerencias):
+def func_mostrar_sugerencias(label, sugerencias_local: List[str]):
     global indice_actual
-    #Se muestran las sugerencias obtenidas y se almacenan
-    max_display_suggestions = min(len(sugerencias), max_sugerencias)  # Máximo de sugerencias visibles
+    max_display = min(len(sugerencias_local), max_sugerencias)
+    if max_display == 0:
+        label.config(text="")
+        return
+
     texto = ""
-    
-    # Muestra las sugerencias según el indice, el cual comienza en 0 siendo la prmera
-    for i in range(max_display_suggestions):
-        if i == indice_actual:
-            texto += f"-> {sugerencias[i]} "  
-        else:
-            texto += f"{sugerencias[i]} "
-        if i < max_display_suggestions - 1:
-            texto += " | " 
-        #Se iran separando según sea la palabra 
+    for i in range(max_display):
+        pref = "➤ " if i == indice_actual else ""
+        texto += f"{pref}{sugerencias_local[i]}"
+        if i < max_display - 1:
+            texto += " | "
 
-    #Se genera la configuración de los subtitulos 
-    label.config(text=texto, bg='black', fg='white', font=('Helvetica', 18, 'bold'))
-    label.place(relx=0.5, rely=0.8, anchor='center')  # Ajustar la ubicación de las sugerencias
+    label.config(text=texto, bg="black", fg="white",
+                 font=("Helvetica", 18, "bold"))
+    label.place(relx=0.5, rely=0.8, anchor="center")
 
-#Cuano la palabra se ha obtenido en la lista, se selecciona la primera
-def resaltar_siguiente(sugerencias):
+
+def func_resaltar_siguiente(sugerencias_local: List[str]):
     global indice_actual
-    max_display_suggestions = min(len(sugerencias), max_sugerencias)
-    
-    #Pasa por las sugerencias siempre y cuando halla más de 0
-    if max_display_suggestions > 0:
-        #Y en caso de llegar al final, se regresa al inicio 
-        indice_actual = (indice_actual + 1) % max_display_suggestions
-        mostrar_sugerencias(sugerencias_label, sugerencias)
+    max_display = min(len(sugerencias_local), max_sugerencias)
+    if max_display > 0:
+        indice_actual = (indice_actual + 1) % max_display
+        func_mostrar_sugerencias(sugerencias_label, sugerencias_local)
 
-#cuando la palabra es adecuada dentro de las sugerencias
-def seleccionar_palabra(sugerencias):
+
+def func_seleccionar_palabra(sugerencias_local: List[str]):
     global indice_actual
-    if sugerencias:
-        palabra_seleccionada = sugerencias[indice_actual]
-        
+    if not sugerencias_local:
+        return
+    palabra_seleccionada = sugerencias_local[indice_actual]
+    func_mostrar_ventana_confirmacion(palabra_seleccionada)
 
-        #Se manda a llamar la ventana de confirmación con la palabra
-        #seleccionada para posteriormente guardarla
-        mostrar_ventana_confirmacion(palabra_seleccionada)
-
-#Se corrige la palabra en caso de que la detección sea erronea
-def corregir_palabra(palabra_detectada):
-    #Se genera una variable con la cual se pasara a corregir la palabra 
-    #en donde posteriormente se llama a la función de guardar correción
-    #en donde se almacenara la palabra erronea, y la palabra corregida
-    correccion = simpledialog.askstring("Corrección", f"Ingrese la corrección para '{palabra_detectada}':")
-    if correccion:
-        (registro, correccion)
-        
-#Se carga nuestro diccionario par auisarlo más adelante y se inicializa 
-#el registro de manos en un valor vacio
-diccionario = cargar_diccionario("Datos/Analisis/z_info_diccionario.txt")
-registro = ""
-
-#Se iran actualizando los subtitulos, agregando el nuevo texto
-#a un registro, el cual sera utilizado para generar la palabra
-#así mismo, si llega a más de 15, se va eliminando el texto
-def actualizar_subtitulos(label, texto):
+# --------------------------------------------------
+# Subtítulos y confirmación
+# --------------------------------------------------
+def func_actualizar_subtitulos(label, texto: str):
     global registro
     registro += texto
-
     if len(registro) > 15:
         registro = registro[-15:]
-    
-    label.config(text=registro, bg='black', fg='white', font=('Helvetica', 24, 'bold'))  
-    label.place(relx=0.5, rely=0.9, anchor='center')
+    label.config(text=registro, bg="black", fg="white",
+                 font=("Helvetica", 24, "bold"))
+    label.place(relx=0.5, rely=0.9, anchor="center")
+    func_guardar_en_frecuencias(texto)
 
-    guardar_en_frecuencias(texto)
 
-last_update_time = time.time()
-
-#en caso de que la detección este siendo erronea, se puede reiniciar con la siguiente funcion 
-def func_reiniciar_deteccion():
-    global detection_active, registro
-    detection_active = True
+def func_mostrar_ventana_confirmacion(palabra_detectada: str):
+    respuesta = messagebox.askyesno(
+        "Confirmación",
+        f"¿La detección de '{palabra_detectada}' fue correcta?"
+    )
+    if respuesta:
+        func_guardar_en_binario(1)
+    else:
+        func_guardar_en_binario(0)
+        func_guardar_error(palabra_detectada)
+        func_corregir_palabra(palabra_detectada)
+    global registro
     registro = ""
-    subtitulo_label.config(text="")
 
-#Tiempo de espera entre capturas para evitar registros repetitivos
-tiempo_espera_post_captura = 2  # Tiempo de espera en segundos cuando se hace una captura
-gesto_actual = ""
-tiempo_inicio_gesto = 0
-capturado = False                #En caso de que se halla generado la captura, se utiliza como bandera esta variable
 
-# Variables para los tiempos de espera
-tiempo_espera_siguiente = 1     #Cuando se identifica el valor de 'Siguiente' es lo que esperara en hacer una selección
-tiempo_espera_seleccionar = 1   #Cuando se identifica el gesto de 'Seleccionar' tiene que esperarse un segundo para finalizar 
-tiempo_espera_gestos = 2        # Tiempo de espera general para otros gestos
+def func_corregir_palabra(palabra_detectada: str):
+    correccion = simpledialog.askstring(
+        "Corrección", f"Ingrese la corrección para '{palabra_detectada}':")
+    if correccion:
+        func_guardar_correccion(palabra_detectada, correccion.strip())
 
-#Se hace uso de de los gestos Siguiente y seleccionar 
-def actualizar_imagen():
-    global last_update_time, gesto_actual, tiempo_inicio_gesto, capturado, sugerencias
+# --------------------------------------------------
+# Modelo y etiquetas
+# --------------------------------------------------
+def func_safe_resize(img_crop: np.ndarray, target_size: tuple) -> np.ndarray:
+    if img_crop.size == 0 or img_crop.shape[0] < MIN_CROP_SIZE or img_crop.shape[1] < MIN_CROP_SIZE:
+        return np.ones((IMG_SIZE, IMG_SIZE, 3), np.uint8) * 128
+    try:
+        return cv2.resize(img_crop, target_size)
+    except cv2.error:
+        return np.ones(target_size + (3,), np.uint8) * 128
+
+
+def func_cargar_etiquetas(ruta: str) -> Dict[int, str]:
+    etiquetas: Dict[int, str] = {}
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            for line in f:
+                linea = line.strip()
+                if (not linea or
+                        linea.startswith("Class Index Mapping") or
+                        linea.startswith("=")):
+                    continue
+                if ":" not in linea:
+                    continue
+                idx_txt, nombre = linea.split(":", 1)
+                idx_txt = idx_txt.strip()
+                nombre = nombre.strip()
+                if not idx_txt.isdigit():
+                    continue
+                idx = int(idx_txt)
+                etiquetas[idx] = nombre
+    except Exception as e:
+        logger.error(f"Error al cargar etiquetas: {e}")
+    return etiquetas
+
+# --------------------------------------------------
+# Bucle principal de imagen
+# --------------------------------------------------
+def func_actualizar_imagen():
+    global last_update_time, gesto_actual, tiempo_inicio_gesto
+    global capturado, sugerencias
     global gesto_siguiente_inicio, gesto_seleccionar_inicio
+    global frame_count, last_fps_time, current_fps
 
     success, img = cap.read()
     if success:
+        # FPS
+        frame_count += 1
+        now = time.time()
+        if now - last_fps_time >= 1.0:
+            current_fps = frame_count / (now - last_fps_time)
+            frame_count = 0
+            last_fps_time = now
+            if fps_label:
+                fps_label.config(text=f"FPS: {current_fps:.1f}")
+
         imgOutput = img.copy()
-        hands, img = detector.findHands(img)
+        hands, _ = detector.findHands(img)
 
         texto_detectado = ""
 
-        #En caso de que se encuentre una mano, continua a realizar en analisis
         if hands:
             try:
-                hand = hands[0] #Cantidad de gestos que se reconoceran así como sus coordenadas
-                x, y, w, h = hand['bbox']
+                hand = hands[0]
+                x, y, w, h = hand["bbox"]
 
-                #Posteriormente calcula y recorta la región necesaria para analizar la mano
-                imgWhite = np.ones((imgSize, imgSize, 3), np.uint8) * 255
-                imgCrop = img[y - offset: y + h + offset, x - offset: x + w + offset]
+                if w < MIN_CROP_SIZE or h < MIN_CROP_SIZE:
+                    root.after(10, func_actualizar_imagen)
+                    return
 
-                #Obtiene la relación de la mano con su altura(h) y su anchura(w) 
+                x1, y1 = max(0, x - OFFSET), max(0, y - OFFSET)
+                x2, y2 = min(img.shape[1], x + w + OFFSET), min(img.shape[0], y + h + OFFSET)
+                imgCrop = img[y1:y2, x1:x2]
+
+                if imgCrop.size == 0:
+                    root.after(10, func_actualizar_imagen)
+                    return
+
+                imgWhite = np.ones((IMG_SIZE, IMG_SIZE, 3), np.uint8) * 255
                 aspectRatio = h / w
 
-                #Se adapta la mano recortada para que se ajuste a la imagen recortada anteriormente y ser analizada 
                 if aspectRatio > 1:
-                    k = imgSize / h
+                    k = IMG_SIZE / h
                     wCal = math.ceil(k * w)
-                    imgResize = cv2.resize(imgCrop, (wCal, imgSize))
-                    wGap = math.ceil((imgSize - wCal) / 2)
-                    imgWhite[:, wGap: wCal + wGap] = imgResize
+                    imgResize = func_safe_resize(imgCrop, (wCal, IMG_SIZE))
+                    wGap = math.ceil((IMG_SIZE - wCal) / 2)
+                    imgWhite[:, wGap:wCal + wGap] = imgResize
                 else:
-                    k = imgSize / w
+                    k = IMG_SIZE / w
                     hCal = math.ceil(k * h)
-                    imgResize = cv2.resize(imgCrop, (imgSize, hCal))
-                    hGap = math.ceil((imgSize - hCal) / 2)
-                    imgWhite[hGap: hCal + hGap, :] = imgResize
+                    imgResize = func_safe_resize(imgCrop, (IMG_SIZE, hCal))
+                    hGap = math.ceil((IMG_SIZE - hCal) / 2)
+                    imgWhite[hGap:hCal + hGap, :] = imgResize
 
-                #Posteriormente, se reescala la imagen para poder oibtener su etiqueta en base a su clasificación
                 imgWhite = cv2.resize(imgWhite, (224, 224))
-                
-                #Se obtiene la imagen predicción junto a su etiqueta y posteriormente se almacena en el arreglo de 'texto detectado' 
                 prediction, index = classifier.getPrediction(imgWhite, draw=False)
-                texto_detectado = labels[index]
 
-                #Posteriormente, se guarda el texto en el cuadrado al rededor de la mano y se muestra
-                cv2.putText(imgOutput, labels[index], (x, y + h + 30), cv2.FONT_HERSHEY_COMPLEX, 2, (255, 0, 255), 2)
-                cv2.rectangle(imgOutput, (x - offset, y - offset), (x + w + offset, y + h + offset), (255, 0, 255), 4)
+                if index in labels:
+                    texto_detectado = labels[index]
+                    # marker color changed to RED
+                    cv2.putText(imgOutput, texto_detectado,
+                                (x1, y1 - 10),
+                                cv2.FONT_HERSHEY_COMPLEX,
+                                1, (0, 0, 255), 2)
+                    cv2.rectangle(imgOutput, (x1, y1), (x2, y2),
+                                  (0, 0, 255), 3)
+
+                logger.debug(f"PRED {prediction} INDEX {index} LABEL {texto_detectado}")
+                root.title(f"🤲 Gesto detectado: {texto_detectado}")
 
             except Exception as e:
-                print(f"Error: {e}")
+                logger.error(f"Error procesando mano: {e}")
 
         current_time = time.time()
 
-        # Entra en uso los gestos de siguiente y seleccionar, que al momento de detectar los gestos, realiza sus tareas correspondientes 
+        # Gestos especiales
         if texto_detectado == "Siguiente":
             if gesto_siguiente_inicio is None:
-                gesto_siguiente_inicio = current_time  #En caso de que no se detecte el gesto siguiente, re reiniciar el temporizador
-            elif current_time - gesto_siguiente_inicio >= tiempo_espera_siguiente: 
-                resaltar_siguiente(sugerencias)  #En caso de que el tiempo se cumpla, se hace resaltar la siguiente palabra
-                gesto_siguiente_inicio = None  #Posteriormente se reiniciar el temporizador 
+                gesto_siguiente_inicio = current_time
+            elif current_time - gesto_siguiente_inicio >= tiempo_espera_siguiente:
+                func_resaltar_siguiente(sugerencias)
+                gesto_siguiente_inicio = None
         else:
-            gesto_siguiente_inicio = None  #Y finalmente, en caso de que el codigo no se mantenga por el tiempo definido, se reinicia
+            gesto_siguiente_inicio = None
 
-        #Para la palabra de seleccionar se realiza la misma acción de iniviar el temporizador
         if texto_detectado == "Seleccionar":
             if gesto_seleccionar_inicio is None:
-                gesto_seleccionar_inicio = current_time  
-            elif current_time - gesto_seleccionar_inicio >= tiempo_espera_seleccionar:  
-                seleccionar_palabra(sugerencias) #Pero en caso de que si se identifique seleccionar, se manda a llamar la funcion de selccionar junto con la palabra detectada 
-                gesto_seleccionar_inicio = None  #Y se reiniciar el temporizador 
+                gesto_seleccionar_inicio = current_time
+            elif current_time - gesto_seleccionar_inicio >= tiempo_espera_seleccionar:
+                func_seleccionar_palabra(sugerencias)
+                gesto_seleccionar_inicio = None
         else:
-            gesto_seleccionar_inicio = None  # Y en caso de que no se mantenga, se reinicia nuevamente 
+            gesto_seleccionar_inicio = None
 
-        # En aso de que los textos o gestos sean Siguiente o Seleccionar, se eliminan de los subtitulos detectados 
-        if texto_detectado not in ["Siguiente", "Seleccionar"]:
-            # Para ello pregunta si el texto detectado (que contiene Siguiente y Seleccionar) es igual al gesto
-            #dentro del arreglo y no al capturado, no se agrega
+        # Gestos normales (requiere ~1 segundo)
+        if texto_detectado and texto_detectado not in ["Siguiente", "Seleccionar"]:
             if texto_detectado == gesto_actual and not capturado:
                 if current_time - tiempo_inicio_gesto >= tiempo_espera_gestos:
-                    actualizar_subtitulos(subtitulo_label, texto_detectado)
+                    logger.info(f"Añadiendo al subtítulo: {texto_detectado}")
+                    func_actualizar_subtitulos(subtitulo_label, texto_detectado)
                     porcentaje_similitud = similarity_slider.get()
-                    sugerencias = obtener_sugerencias(registro, diccionario, porcentaje_similitud)
-                    mostrar_sugerencias(sugerencias_label, sugerencias)
-
+                    sugerencias = func_obtener_sugerencias(
+                        registro, diccionario, porcentaje_similitud)
+                    func_mostrar_sugerencias(sugerencias_label, sugerencias)
                     capturado = True
                     last_update_time = current_time
             else:
-                #En caso contrario, se reinicia el temporizador
                 gesto_actual = texto_detectado
                 tiempo_inicio_gesto = current_time
                 capturado = False
-        #Si hay una captura y el tiempo de espera ya paso, se reinicia la captura 
+
         if capturado and current_time - last_update_time >= tiempo_espera_post_captura:
             capturado = False
 
-        #convierte la imagen de BGR a RGB 
+        # Actualizar imagen en tkinter
         imgRGB = cv2.cvtColor(imgOutput, cv2.COLOR_BGR2RGB)
         imgPIL = Image.fromarray(imgRGB)
-        #Posteriormente sea justa la imagen al tamño de la ventana principal
-        imgPIL = imgPIL.resize((root.winfo_width(), root.winfo_height()))
+        imgPIL = imgPIL.resize((root.winfo_width()-20, root.winfo_height()-100))
         imgTK = ImageTk.PhotoImage(imgPIL)
-        #Finalmente se actualiza la etiqueta de la imagen con la nueva imagen
         imagen_label.config(image=imgTK)
         imagen_label.image = imgTK
 
-    #Se acutaliza la imagen cada 10ms 
-    root.after(10, actualizar_imagen)
+    root.after(10, func_actualizar_imagen)
 
-#Ubicaciones del modelo y sus etiquetas 
-model_path = "Modelo/modelo_gestos_mejorado.h5"
-labels_path = "Modelo/labels.txt"
+# --------------------------------------------------
+# Main
+# --------------------------------------------------
+if __name__ == "__main__":
+    if not os.path.exists(MODEL_PATH):
+        print(f"❌ Modelo no encontrado: {MODEL_PATH}")
+        exit(1)
+    if not os.path.exists(LABELS_PATH):
+        print(f"❌ Etiquetas no encontradas: {LABELS_PATH}")
+        exit(1)
 
-if not os.path.exists(model_path):
-    messagebox.showerror("Error", "El archivo del modelo no se encuentra.")
-    func_captures()
-    root.destroy()
-elif not os.path.exists(model_path):
-    messagebox.showerror("Error", "Las etiquedas del modelo no se encuentra.")
-    func_captures()
-    root.destroy()
-else:
+    root = tk.Tk()
+    root.title("🤲 Reconocimiento de Lengua de Señas")
+    root.geometry("1280x720")
+    root.configure(bg="#8e8ca3")
+
+    imagen_label = tk.Label(root)
+    imagen_label.place(x=0, y=0, relwidth=1, relheight=0.7)
+
+    similarity_slider = tk.Scale(root, from_=1, to=100, orient="horizontal",
+                                 label="Similitud (%)", bg="#8e8ca3")
+    similarity_slider.place(x=120, y=520)
+    similarity_slider.set(60)
+
+    # FPS label at left top of subtitles
+    fps_label = tk.Label(root, text="FPS: 0.0", bg="black", fg="white",
+                         font=("Helvetica", 10, "bold"))
+    fps_label.place(x=20, y=670)
+
     cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
     detector = HandDetector(maxHands=1)
-    classifier = Classifier(model_path, labels_path)
+    classifier = Classifier(MODEL_PATH, LABELS_PATH)
+    labels = func_cargar_etiquetas(LABELS_PATH)
+    diccionario = func_cargar_diccionario(DICT_PATH)
 
-    offset = 20
-    imgSize = 100
+    print("DEBUG labels:", labels)
+    print("DEBUG diccionario size:", len(diccionario))
 
-    def cargar_etiquetas(ruta):
-        etiquetas = {}
-        with open(ruta, 'r') as f:
-            for line in f:
-                index, label = line.strip().split()
-                etiquetas[int(index)] = label
-        return etiquetas
+    subtitulo_label = tk.Label(root, text="", bg="black", fg="white",
+                               font=("Helvetica", 24, "bold"))
+    sugerencias_label = tk.Label(root, text="", bg="black", fg="white",
+                                 font=("Helvetica", 18, "bold"))
 
-    labels = cargar_etiquetas(labels_path)
+    xBtn = 100
+    func_crear_boton(root, "Configuración", func_conf, xBtn, 60)
+    func_crear_boton(root, "Alfabeto", func_alph, xBtn, 120)
+    func_crear_boton(root, "Captura", func_captures, xBtn, 180)
+    func_crear_boton(root, "Reiniciar", func_reiniciar_deteccion, xBtn, 240)
 
-    subtitulo_label = tk.Label(root, text="", font=('Helvetica', 24, 'bold'))
-    sugerencias_label = tk.Label(root, text="", font=('Helvetica', 18, 'bold'))
-    
-    actualizar_imagen()
+    logger.info("✅ GUI Gesture Recognition Started")
+    func_actualizar_imagen()
+    root.mainloop()
 
-xBtn = 100
-crear_boton(root, text="Configuración",         command=func_conf,                              x=xBtn, y=60)
-crear_boton(root, text="Alfabeto",              command=func_alph,                              x=xBtn, y=120)
-crear_boton(root, text="Captura",               command=func_captures,                          x=xBtn, y=180)
-crear_boton(root, text="Reiniciar detección",   command=func_reiniciar_deteccion,               x=xBtn, y=240)
-
-root.mainloop()
-
-cap.release()
-cv2.destroyAllWindows()
+    if cap:
+        cap.release()
+    cv2.destroyAllWindows()

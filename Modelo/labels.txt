@@ -1,7 +1,9 @@
-0 A
-1 E
-2 I
-3 O
-4 Seleccionar
-5 Siguiente
-6 U
+Class Index Mapping (index: class_name):
+========================================
+ 0: A
+ 1: E
+ 2: I
+ 3: O
+ 4: Seleccionar
+ 5: Siguiente
+ 6: U
