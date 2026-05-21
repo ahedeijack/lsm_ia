@@ -404,7 +404,12 @@ def func_actualizar_imagen():
         # Actualizar imagen en tkinter
         imgRGB = cv2.cvtColor(imgOutput, cv2.COLOR_BGR2RGB)
         imgPIL = Image.fromarray(imgRGB)
-        imgPIL = imgPIL.resize((root.winfo_width()-20, root.winfo_height()-100))
+        width = root.winfo_width() - 20
+        height = root.winfo_height() - 100
+        if width <= 0 or height <= 0:
+            root.after(10, func_actualizar_imagen)
+            return
+        imgPIL = imgPIL.resize((width, height))
         imgTK = ImageTk.PhotoImage(imgPIL)
         imagen_label.config(image=imgTK)
         imagen_label.image = imgTK
@@ -440,7 +445,7 @@ if __name__ == "__main__":
                          font=("Helvetica", 10, "bold"))
     fps_label.place(x=20, y=670)
 
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(1)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
